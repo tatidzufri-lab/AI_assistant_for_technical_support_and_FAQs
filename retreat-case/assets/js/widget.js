@@ -4,17 +4,25 @@
  * Секретный API-ключ не хранится в браузере: бэкенд выдаёт client_secret
  * через POST /v1/chatkit/sessions (см. developers.openai.com → ChatKit).
  *
- * Локально: поднимите server/main.py и укажите sessionEndpoint + workflowId ниже.
+ * Локально: поднимите server/main.py, задайте CHATKIT_WORKFLOW_ID в server/.env и sessionEndpoint ниже.
  */
 
 const WIDGET_CONFIG = {
-  /** ID опубликованного workflow из Agent Builder */
-  workflowId: "wf_YOUR_WORKFLOW_ID_FROM_AGENT_BUILDER",
+  /**
+   * ID workflow из Agent Builder (wf_…). Если null или "" — сервер берёт CHATKIT_WORKFLOW_ID из server/.env.
+   * Ненулевое значение удобно для временного переопределения без правки .env.
+   */
+  workflowId: null,
   /**
    * URL эндпоинта, который возвращает { client_secret } (см. retreat-case/server).
    * Должен совпадать с origin статики в CORS_ORIGINS на сервере.
+   * Локально — отдельный сервер на 8000; на сайте — тот же домен, nginx сам
+   * передаёт /api/create-session бэкенду. Иначе с прода виджет стучался бы
+   * в 127.0.0.1 на компьютере посетителя.
    */
-  sessionEndpoint: "http://127.0.0.1:8000/api/create-session",
+  sessionEndpoint: /^(localhost|127\.0\.0\.1)$/.test(location.hostname)
+    ? "http://127.0.0.1:8000/api/create-session"
+    : "/api/create-session",
   /** Имя ассистента в терракотовой полосе над чатом */
   assistantName: "Консультант ретрита",
   /** Локаль UI iframe ChatKit (приветствие, плейсхолдер, кнопки). */
@@ -84,13 +92,16 @@ const WIDGET_CONFIG = {
     });
   }
 
+  function resolvedWorkflowId() {
+    var w = WIDGET_CONFIG.workflowId;
+    if (w == null) return "";
+    return String(w).trim();
+  }
+
   function validateConfig() {
-    if (
-      !WIDGET_CONFIG.workflowId ||
-      WIDGET_CONFIG.workflowId === "CHATKIT_WORKFLOW_ID_HERE" ||
-      !/^wf_/.test(WIDGET_CONFIG.workflowId)
-    ) {
-      return "Укажите workflowId (wf_…) из Agent Builder в WIDGET_CONFIG.";
+    var wid = resolvedWorkflowId();
+    if (wid && !/^wf_/.test(wid)) {
+      return "Неверный workflowId: ожидается id вида wf_… или оставьте null — тогда используется CHATKIT_WORKFLOW_ID в server/.env.";
     }
     if (
       !WIDGET_CONFIG.sessionEndpoint ||
@@ -99,6 +110,12 @@ const WIDGET_CONFIG = {
       return "Укажите sessionEndpoint (URL бэкенда /api/create-session).";
     }
     return null;
+  }
+
+  function createSessionRequestBody() {
+    var wid = resolvedWorkflowId();
+    if (!wid) return {};
+    return { workflow: { id: wid } };
   }
 
   function buildWidget() {
@@ -225,9 +242,7 @@ const WIDGET_CONFIG = {
                   method: "POST",
                   credentials: "include",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    workflow: { id: WIDGET_CONFIG.workflowId },
-                  }),
+                  body: JSON.stringify(createSessionRequestBody()),
                 })
                   .then(function (res) {
                     return res.json().then(function (body) {
