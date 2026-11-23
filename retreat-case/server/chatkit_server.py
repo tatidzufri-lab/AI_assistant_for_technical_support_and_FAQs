@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -35,6 +36,11 @@ import retreat_agents as ra
 from sqlite_store import Context, SQLiteStore
 
 logger = logging.getLogger("retreat.chatkit")
+if not logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(_h)
+    logger.setLevel(logging.INFO)
 
 MAX_MESSAGE_CHARS = int(os.getenv("DEMO_MAX_MESSAGE_CHARS", "1000"))
 MAX_PER_IP_DAY = int(os.getenv("DEMO_MAX_PER_IP_DAY", "40"))
@@ -107,11 +113,14 @@ class RetreatChatKitServer(ChatKitServer[Context]):
             return True
         return any(getattr(r, "tripwire_triggered", False) for r in results or [])
 
-    async def _route(self, text: str) -> str:
-        result = await Runner.run(ra.classifier(), text)
+    async def _route(self, text: str, staff: bool) -> str:
+        # Код, введенный раньше в этом треде, действует на весь диалог:
+        # классификатору подставляем его, чтобы правило про шаблоны сработало
+        has_code = ra.STAFF_CODE.lower() in text.lower()
+        result = await Runner.run(ra.classifier(), text if has_code or not staff else f"{ra.STAFF_CODE} {text}")
         route = result.final_output.route
-        # Шаблоны — только с кодом сотрудника, даже если классификатор ошибся
-        if route == "templates" and ra.STAFF_CODE.lower() not in text.lower():
+        # Шаблоны — только для команды, даже если классификатор ошибся
+        if route == "templates" and not staff:
             route = "general"
         return route
 
@@ -145,10 +154,20 @@ class RetreatChatKitServer(ChatKitServer[Context]):
             yield self._static(thread, context, ra.STATIC["limit"][lang])
             return
 
-        blocked, route = await asyncio.gather(self._is_jailbreak(text), self._route(text))
-        logger.info("thread=%s lang=%s route=%s blocked=%s", thread.id, lang, route, blocked)
+        has_code = ra.STAFF_CODE.lower() in text.lower()
+        if has_code:
+            thread.metadata["staff"] = True
+        staff = bool(thread.metadata.get("staff"))
+
+        blocked, route = await asyncio.gather(self._is_jailbreak(text), self._route(text, staff))
+        logger.info("thread=%s lang=%s route=%s blocked=%s staff=%s", thread.id, lang, route, blocked, staff)
         if blocked:
             yield self._static(thread, context, ra.STATIC["blocked"][lang])
+            return
+        # Только код без просьбы — подтверждаем доступ и спрашиваем, какое письмо нужно
+        rest = re.sub(re.escape(ra.STAFF_CODE), "", text, flags=re.IGNORECASE).strip(" \t\n,.:;!-—")
+        if has_code and len(rest) < 3:
+            yield self._static(thread, context, ra.STATIC["staff_on"][lang])
             return
         if route == "welcome":
             yield self._static(thread, context, ra.STATIC["welcome"][lang])
