@@ -1,7 +1,10 @@
-"""Обмен workflow Agent Builder (wf_…) на client_secret для ChatKit.
+"""Бэкенд виджета ретрита (кейс 7).
 
-См. https://developers.openai.com/api/docs/guides/chatkit
-Логика совместима с openai/openai-chatkit-starter-app (managed-chatkit/backend).
+POST /api/chatkit — свой сервер ChatKit: агенты на Agents SDK, RU и EN (chatkit_server.py).
+Agent Builder отключают 30.11.2026, поэтому это основной путь.
+
+POST /api/create-session — прежний режим: обмен workflow Agent Builder (wf_…) на
+client_secret. Оставлен до окончательного переключения, чтобы можно было откатиться.
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from dotenv import load_dotenv
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
@@ -42,6 +45,45 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+_chatkit_server = None
+
+
+def _get_chatkit_server():
+    """Создается при первом запросе: без OPENAI_API_KEY старый режим продолжает работать."""
+    global _chatkit_server
+    if _chatkit_server is None:
+        from chatkit_server import RetreatChatKitServer
+
+        _chatkit_server = RetreatChatKitServer(os.getenv("CHATKIT_DATA_DIR", "/app/data"))
+    return _chatkit_server
+
+
+@app.post("/api/chatkit")
+async def chatkit_endpoint(request: Request) -> Response:
+    from chatkit_server import is_streaming
+
+    user_id, cookie_value = _resolve_user(request.cookies)
+    lang = request.headers.get("x-retreat-lang", "ru")
+    context = {
+        "user_id": user_id,
+        "lang": "en" if lang == "en" else "ru",
+        "ip": request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown"),
+    }
+    result = await _get_chatkit_server().process(await request.body(), context)
+    if is_streaming(result):
+        response: Response = StreamingResponse(
+            result, media_type="text/event-stream", headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
+        )
+    else:
+        response = Response(content=result.json, media_type="application/json")
+    if cookie_value:
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME, value=cookie_value, max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
+            httponly=True, samesite="lax", secure=_is_prod(), path="/",
+        )
+    return response
 
 
 @app.get("/health")

@@ -9,10 +9,11 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py ./
+COPY main.py chatkit_server.py retreat_agents.py sqlite_store.py ./
 
 ARG APP_UID=1000
 RUN useradd --create-home --uid ${APP_UID} app \
+    && mkdir -p /app/data \
     && chown -R app:app /app
 USER app
 
