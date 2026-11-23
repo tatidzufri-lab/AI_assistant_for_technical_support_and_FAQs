@@ -185,7 +185,10 @@ def _build_chatkit_session_payload(
         if isinstance(tr, Mapping):
             workflow["tracing"] = {"enabled": bool(tr.get("enabled", True))}
 
-    env_version = (os.getenv("CHATKIT_WORKFLOW_VERSION") or "").strip()
+    env_version = (
+        os.getenv("CHATKIT_WORKFLOW_VERSION_EN") if _is_english(body) else os.getenv("CHATKIT_WORKFLOW_VERSION")
+    ) or ""
+    env_version = env_version.strip()
     if env_version and "version" not in workflow:
         workflow["version"] = env_version
 
@@ -205,13 +208,21 @@ def _build_chatkit_session_payload(
     return {"workflow": workflow, "user": user_id}
 
 
+def _is_english(body: Mapping[str, Any]) -> bool:
+    """Английская страница передает lang=en. Без EN-workflow остается русский."""
+    return body.get("lang") == "en" and bool((os.getenv("CHATKIT_WORKFLOW_ID_EN") or "").strip())
+
+
 def _resolve_workflow_id(body: Mapping[str, Any]) -> str | None:
     workflow = body.get("workflow", {})
     workflow_id = None
     if isinstance(workflow, Mapping):
         workflow_id = workflow.get("id")
     workflow_id = workflow_id or body.get("workflowId")
-    env_workflow = os.getenv("CHATKIT_WORKFLOW_ID") or os.getenv("VITE_CHATKIT_WORKFLOW_ID")
+    if _is_english(body):
+        env_workflow = os.getenv("CHATKIT_WORKFLOW_ID_EN")
+    else:
+        env_workflow = os.getenv("CHATKIT_WORKFLOW_ID") or os.getenv("VITE_CHATKIT_WORKFLOW_ID")
     if not workflow_id and env_workflow:
         workflow_id = env_workflow
     if workflow_id and isinstance(workflow_id, str) and workflow_id.strip():
