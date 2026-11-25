@@ -1,144 +1,144 @@
-# Миграция кейса 7 с Agent Builder на свой сервер (RU + EN)
+# Moving case 7 off Agent Builder to my own server (RU + EN)
 
-Составлено 23.11.2026. Срок: **Agent Builder отключают 30 ноября 2026** (страница Deprecations OpenAI, уведомление от 3 июня 2026). Замена по документации: Agents SDK (код) или Workspace Agents в ChatGPT.
+Written 23.11.2026. Deadline: **Agent Builder shuts down on 30 November 2026** (OpenAI Deprecations page, notice of 3 June 2026). The documented replacements are the Agents SDK (code) or Workspace Agents in ChatGPT.
 
-## Что выбираем и почему
+## What I chose and why
 
-**Agents SDK + свой сервер ChatKit.** Workspace Agents живут внутри ChatGPT (нужен тариф Business, Enterprise или Edu) и на сайт не встраиваются, поэтому для виджета на retreat.tatidzufri.com не подходят.
+**Agents SDK + my own ChatKit server.** Workspace Agents live inside ChatGPT (they need a Business, Enterprise or Edu plan) and can't be embedded in a website, so they don't work for the widget on retreat.tatidzufri.com.
 
-ChatKit как продукт остается, меняется только режим. Сейчас виджет получает `client_secret` и общается с workflow на серверах OpenAI. После миграции виджет общается с нашим сервером, а сервер запускает агентов через Agents SDK.
+ChatKit as a product stays; only the mode changes. Before, the widget got a `client_secret` and talked to a workflow on OpenAI's servers. After the move, the widget talks to my server, and the server runs the agents through the Agents SDK.
 
-| | Сейчас | После миграции |
+| | Before | After the move |
 |---|---|---|
-| Где живут агенты | Agent Builder (кабинет OpenAI) | Код в репозитории, контейнер `retreat-chatkit` |
-| Виджет | `api: { getClientSecret }` | `api: { url: "/api/chatkit", domainKey }` |
-| База знаний | vector store, привязанный в Agent Builder | два vector store через API: RU и EN |
-| Языки | только русский | RU и EN: язык страницы выбирает набор агентов и базу |
-| История диалогов | хранит OpenAI | SQLite на сервере (том, переживает перезапуск) |
+| Where the agents live | Agent Builder (OpenAI dashboard) | Code in the repository, the `retreat-chatkit` container |
+| Widget | `api: { getClientSecret }` | `api: { url: "/api/chatkit", domainKey }` |
+| Knowledge base | a vector store attached in Agent Builder | two vector stores via the API: RU and EN |
+| Languages | Russian only | RU and EN: the page language picks the agent set and the knowledge base |
+| Conversation history | kept by OpenAI | SQLite on the server (a volume that survives restarts) |
 
-Что потребуется переписать руками, потому что экспорт, по словам OpenAI, «не переносит граф и не гарантирует, что поведение сохранится»: классификатор с переходами между агентами превращается в агента-диспетчера с handoffs, guardrail — во входной guardrail Agents SDK, привязку файлов — в `FileSearchTool` с id vector store.
+What had to be rewritten by hand, because according to OpenAI the export "doesn't carry over the graph and doesn't guarantee the same behavior": the classifier with transitions between agents becomes a dispatcher agent with handoffs, the guardrail becomes an Agents SDK input guardrail, and file attachments become `FileSearchTool` with the vector store id.
 
-## Статус на 23.11.2026
+## Status on 23.11.2026
 
-- ✅ Шаг 1: экспорт получен.
-- ✅ Шаги 2–5, 7: английские vector store созданы, сервер ChatKit с агентами (RU и EN) работает на сервере, маршрут `/api/chatkit` в nginx, виджет умеет оба режима.
-- ✅ Шаг 8 частично: прогнаны 14 сценариев через протокол ChatKit (RU и EN: приветствие, цены, возврат, шаблон с кодом и без, маркетинг, jailbreak, продолжение диалога). Проверка в браузере уперлась в ключ домена.
-- ✅ Шаг 6 (24.11): домен зарегистрирован, ключ прописан. Новый режим проверен в браузере на обеих страницах: стартовый экран на языке страницы, ответы по базе, память диалога, письмо по коду команды.
-- ✅ Шаг 9 (24.11): Татьяна приняла, виджет по умолчанию переключен на свой сервер. Прежний режим доступен по `?chat=old` до 30.11.
-- ✅ Шаг 10 частично: сайт (EN-ссылка на `/en/`, demo_text с кодом `team2026` на обоих языках, стек), README.
-- ⏳ После 30.11: убрать `?chat=old`, `/api/create-session`, `/api/thread-items/`, их маршруты nginx и переменные `CHATKIT_WORKFLOW_ID*`.
+- ✅ Step 1: the export is in.
+- ✅ Steps 2–5, 7: English vector stores created, the ChatKit server with agents (RU and EN) runs on the server, `/api/chatkit` is routed in nginx, the widget supports both modes.
+- ✅ Step 8, partly: 14 scenarios run through the ChatKit protocol (RU and EN: greeting, prices, refunds, a template with and without the code, marketing, jailbreak, continuing a conversation). The browser check hit the domain key.
+- ✅ Step 6 (24.11): the domain is registered and the key is set. The new mode was checked in the browser on both pages: the start screen in the page language, answers from the knowledge base, conversation memory, an email by the team code.
+- ✅ Step 9 (24.11): Tetiana signed off, and the widget now uses my server by default. The old mode is available with `?chat=old` until 30.11.
+- ✅ Step 10, partly: the site (EN link to `/en/`, demo_text with the `team2026` code in both languages, the stack), the README.
+- ⏳ After 30.11: remove `?chat=old`, `/api/create-session`, `/api/thread-items/`, their nginx routes and the `CHATKIT_WORKFLOW_ID*` variables.
 
-## Разбор экспорта: что исправлено при переносе
+## What the export got wrong and how it was fixed
 
-1. **Экспорт не запускается как есть.** У четырех агентов температура записана как `0["5"]`, `0["1"]`, `0["3"]` — это ошибка генератора, Python падает с TypeError. Перенесены значения 0,5, 0,1 и 0,3.
-2. **Экспорт не возвращает ответ агента.** Каждая ветка заканчивается заглушкой `{"message": "Your return is on the way."}` из узла End. В Agent Builder ответ шел в ChatKit стримингом, в коде этого нет. На своем сервере ответ агента стримится в виджет через `stream_agent_response`.
-3. **Классификатор сравнивался строкой.** Любой ответ кроме точного `faq`, `documents` и т. д. (например, «FAQ» или «faq.») уходил в ветку отказа. Теперь классификатор возвращает структурированный ответ из пяти значений.
-4. **Проверка кода сотрудника в Templates Agent была сломана.** В инструкции стоит неподставленная переменная `{{STAFF_CODE}}`. Теперь код проверяется в коде (шаблоны — только если код есть в сообщении) и подставляется в инструкции из `.env`.
-5. **Hallucination Detection стоял на входе.** Этот guardrail проверяет утверждения по базе знаний, но к нему шел вопрос пользователя, а не ответ модели. Убран; на входе остался Jailbreak с теми же настройками (gpt-4.1-mini, порог 0,7).
-6. **Две модели работали ради готового текста.** Приветствие вызывало gpt-5.4 с рассуждениями, отказ guardrail — gpt-4o-mini, хотя обе инструкции требуют «отправить только этот текст». Теперь это готовый текст без вызова модели: быстрее и дешевле.
-7. **Агенты не помнили диалог.** Workflow передавал агенту только текущее сообщение. Теперь агент видит последние 20 сообщений треда; проверено вопросом-продолжением.
-8. **Ответ без поиска по базе.** На тестах английский агент шаблонов однажды написал письмо «от себя». Теперь агенты с базой знаний сначала обязательно ищут по ней (`tool_choice="required"`, после первого вызова SDK сбрасывает его сам).
-9. Добавлено: английские версии всех агентов и баз знаний, суточные лимиты демо (на IP и всего), ограничение длины сообщения.
+1. **The export doesn't run as is.** For four agents the temperature is written as `0["5"]`, `0["1"]`, `0["3"]`, a generator bug that makes Python fail with a TypeError. The values 0.5, 0.1 and 0.3 were carried over.
+2. **The export doesn't return the agent's answer.** Every branch ends with a stub `{"message": "Your return is on the way."}` from the End node. In Agent Builder the answer streamed into ChatKit; in code it doesn't. On my server the agent's answer streams into the widget through `stream_agent_response`.
+3. **The classifier was matched as a string.** Any answer other than exactly `faq`, `documents` and so on (say, "FAQ" or "faq.") went to the refusal branch. Now the classifier returns a structured answer with five possible values.
+4. **The staff code check in Templates Agent was broken.** The instruction contains an unfilled variable, `{{STAFF_CODE}}`. Now the code is checked in code (templates only if the code is in the message) and inserted into the instructions from `.env`.
+5. **Hallucination Detection sat at the input.** This guardrail checks claims against the knowledge base, but it was getting the user's question, not the model's answer. Removed; the input keeps Jailbreak with the same settings (gpt-4.1-mini, threshold 0.7).
+6. **Two models ran just to output fixed text.** The greeting called gpt-5.4 with reasoning, the guardrail refusal called gpt-4o-mini, though both instructions say "send only this text". Now they're fixed texts with no model call: faster and cheaper.
+7. **The agents didn't remember the conversation.** The workflow passed the agent only the current message. Now the agent sees the last 20 messages of the thread; checked with a follow-up question.
+8. **Answers without searching the knowledge base.** In testing, the English templates agent once wrote an email "on its own". Now agents with a knowledge base must search it first (`tool_choice="required"`; after the first call the SDK resets it by itself).
+9. Added: English versions of all agents and knowledge bases, daily demo limits (per IP and in total), a message length limit.
 
-## Шаги
+## Steps
 
-Кто делает: **Т** — Татьяна, **К** — Claude.
+Who does what: **T** is Tetiana, **C** is Claude.
 
-### 1. Т · Выгрузить текущий workflow в код (5 минут, до 30 ноября)
+### 1. T · Export the current workflow to code (5 minutes, before 30 November)
 
-Это единственное, что нельзя сделать без вас и после 30 ноября: в экспорте точные инструкции агентов, настройки guardrail и id vector store.
+This is the only thing that can't be done without you, or after 30 November: the export holds the exact agent instructions, guardrail settings and vector store ids.
 
-1. platform.openai.com → Agent Builder → workflow «Познай себя» (id `wf_69bd6b44…`).
-2. Вверху выбрать **Code** → **Agents SDK** → **Python**.
-3. Скопировать весь код и сохранить в файл `Case_7_AI_assistant_for_technical_support_and_FAQs/project/agent-builder-export/workflow_ru.py` (или просто прислать мне в чат: секретов в экспорте нет, ключ API берется из переменной окружения).
-4. Желательно скриншот графа workflow целиком — для сверки.
+1. platform.openai.com → Agent Builder → the "Know Yourself" («Познай себя») workflow (id `wf_69bd6b44…`).
+2. At the top choose **Code** → **Agents SDK** → **Python**.
+3. Copy all the code and save it to `Case_7_AI_assistant_for_technical_support_and_FAQs/project/agent-builder-export/workflow_ru.py` (or just send it to me in the chat: there are no secrets in the export, the API key comes from an environment variable).
+4. Ideally, a screenshot of the whole workflow graph, for cross-checking.
 
-### 2. К · Базы знаний: два vector store
+### 2. C · Knowledge bases: two vector stores
 
-- RU: `01_faq_knowledge_base.md`, `02_docs_and_instructions.md`, `03_email_templates.md` (как в текущем workflow; если в экспорте другой состав — по экспорту).
-- EN: файлы из `agent-builder-en/` (адаптированы: Доломиты, Инсбрук).
-- Создаются через API ключом, который уже лежит на сервере. id записываются в `~/apps/retreat/chatkit/.env`.
+- RU: `01_faq_knowledge_base.md`, `02_docs_and_instructions.md`, `03_email_templates.md` (as in the current workflow; if the export lists different files, follow the export).
+- EN: files from `agent-builder-en/` (adapted: the Dolomites, Innsbruck).
+- Created via the API with the key already on the server. The ids go to `~/apps/retreat/chatkit/.env`.
 
-### 3. К · Агенты в коде (Agents SDK)
+### 3. C · Agents in code (Agents SDK)
 
-Перенос по экспорту, один набор на каждый язык:
+Ported from the export, one set per language:
 
-- **Guardrail** на вход: проверка на jailbreak и prompt injection до агентов. Срабатывание — вежливый отказ на языке страницы.
-- **Диспетчер** (бывший классификатор) с handoffs: FAQ Agent, Docs Agent, Templates Agent (только по коду `team2026`), Off Topic Handler. Приветствие (Welcome Message) — через стартовый экран виджета и инструкцию диспетчера.
-- FAQ, Docs и Templates ищут по своему vector store (`FileSearchTool`).
-- Тексты RU — из экспорта без изменений. Тексты EN — из `agent-builder-en/SETUP.md`, сверенные с экспортом.
-- Модель — как в экспорте.
+- **Guardrail** at the input: checks for jailbreak and prompt injection before the agents. When it fires, a polite refusal in the page language.
+- **Dispatcher** (the former classifier) with handoffs: FAQ Agent, Docs Agent, Templates Agent (only with the `team2026` code), Off Topic Handler. The greeting (Welcome Message) comes from the widget's start screen and the dispatcher's instruction.
+- FAQ, Docs and Templates search their own vector store (`FileSearchTool`).
+- RU texts come from the export unchanged. EN texts come from `agent-builder-en/SETUP.md`, checked against the export.
+- The model is as in the export.
 
-### 4. К · Сервер ChatKit вместо выдачи client_secret
+### 4. C · A ChatKit server instead of issuing a client_secret
 
-- Пакеты `openai-chatkit` и `openai-agents` (проверены версии 1.6.5 и 0.25.0), сервер на FastAPI в том же контейнере `retreat-chatkit`.
-- Класс-наследник `ChatKitServer`: в `respond()` история треда → `simple_to_agent_input` → `Runner.run_streamed` → `stream_agent_response` (так в документации ChatKit).
-- Язык приходит со страницы (заголовок запроса) и сохраняется в метаданных треда: продолжение диалога остается на своем языке.
-- Хранилище тредов — SQLite на томе. Готового SQLite-хранилища в пакете нет, только абстрактный `Store`; реализую его сама.
-- Лимиты демо как у остальных платных демо: на IP и в сутки, длина сообщения.
+- The `openai-chatkit` and `openai-agents` packages (checked versions 1.6.5 and 0.25.0), a FastAPI server in the same `retreat-chatkit` container.
+- A `ChatKitServer` subclass: in `respond()`, thread history → `simple_to_agent_input` → `Runner.run_streamed` → `stream_agent_response` (as in the ChatKit docs).
+- The language comes from the page (a request header) and is saved in the thread metadata, so a continued conversation stays in its language.
+- Thread storage is SQLite on a volume. The package has no ready SQLite store, only an abstract `Store`, so I implement it myself.
+- Demo limits like the other paid demos: per IP and per day, plus message length.
 
-### 5. К · Виджет
+### 5. C · The widget
 
-- `api: { url: "/api/chatkit", domainKey }` вместо `getClientSecret`.
-- Стартовый экран на языке страницы: приветствие и 3–4 готовых вопроса (`startScreen.greeting`, `startScreen.prompts`), локаль интерфейса `ru` или `en`.
+- `api: { url: "/api/chatkit", domainKey }` instead of `getClientSecret`.
+- A start screen in the page language: a greeting and 3–4 ready questions (`startScreen.greeting`, `startScreen.prompts`), interface locale `ru` or `en`.
 
-### 6. Т · Зарегистрировать домен и прислать ключ (5 минут)
+### 6. T · Register the domain and send the key (5 minutes)
 
-Проверено в браузере 23.11: заглушка `local-dev` не проходит. Виджет вызывает `POST https://api.openai.com/v1/chatkit/domain_keys/verify`, получает 400 и показывает: «Domain verification failed for https://retreat.tatidzufri.com. Please register your domain at https://platform.openai.com/settings/organization/security/domain-allowlist». В документации этой страницы нет, адрес взят из текста ошибки.
+Checked in the browser on 23.11: the `local-dev` placeholder doesn't pass. The widget calls `POST https://api.openai.com/v1/chatkit/domain_keys/verify`, gets a 400 and shows: "Domain verification failed for https://retreat.tatidzufri.com. Please register your domain at https://platform.openai.com/settings/organization/security/domain-allowlist". That page isn't in the docs; the address comes from the error text.
 
-1. Открыть https://platform.openai.com/settings/organization/security/domain-allowlist (Settings → Organization → Security → Domain allowlist).
-2. Добавить домен `retreat.tatidzufri.com` (если спросит протокол — с `https://`).
-3. Скопировать ключ домена и прислать мне. Он публичный: стоит в коде страницы, секретом не является.
+1. Open https://platform.openai.com/settings/organization/security/domain-allowlist (Settings → Organization → Security → Domain allowlist).
+2. Add the domain `retreat.tatidzufri.com` (with `https://` if it asks for the protocol).
+3. Copy the domain key and send it to me. It's public: it sits in the page code and isn't a secret.
 
-Дальше К: прописываю ключ в виджет и прохожу шаг 8 в браузере.
+Then C: puts the key into the widget and runs step 8 in the browser.
 
-### 7. К · Сервер и nginx
+### 7. C · Server and nginx
 
-- Новый маршрут `/api/chatkit` → контейнер `retreat-chatkit` (сейчас `/api/` уходит в API отзывов), с потоковой передачей ответа (без буферизации).
-- Лимит запросов nginx, как у других платных демо.
-- Старый маршрут `/api/create-session` остается до проверки, чтобы можно было откатиться.
+- A new route, `/api/chatkit` → the `retreat-chatkit` container (currently `/api/` goes to the reviews API), with streaming responses (no buffering).
+- An nginx request limit, as for the other paid demos.
+- The old `/api/create-session` route stays until the check, so a rollback is possible.
 
-### 8. К · Проверка (RU и EN)
+### 8. C · Checks (RU and EN)
 
-На обеих страницах, `/` и `/en/`:
+On both pages, `/` and `/en/`:
 
-- вопрос о программе и ценах — ответ по базе, на языке страницы, EN — про Доломиты;
-- `team2026` + запрос шаблона письма — Templates Agent;
-- вопрос не по теме и запрос «расскажи про воронку продаж» — вежливый отказ;
-- попытка jailbreak — срабатывает guardrail;
-- второе сообщение в том же диалоге — контекст сохраняется;
-- перезапуск контейнера — история не теряется.
+- a question about the program and prices: an answer from the knowledge base, in the page language, the EN one about the Dolomites;
+- `team2026` + a request for an email template: Templates Agent;
+- an off-topic question and "tell me about the sales funnel": a polite refusal;
+- a jailbreak attempt: the guardrail fires;
+- a second message in the same conversation: the context holds;
+- a container restart: the history isn't lost.
 
-### 9. Т · Приемка в браузере (10 минут)
+### 9. T · Sign-off in the browser (10 minutes)
 
-Пройти те же пункты на сайте самой. Если все хорошо — переключаем окончательно.
+Go through the same points on the site yourself. If all is well, we switch for good.
 
-### 10. К · Уборка
+### 10. C · Cleanup
 
-- Убрать `/api/create-session`, переменные `CHATKIT_WORKFLOW_ID*` и старый код выдачи `client_secret`.
-- README кейса: «агенты на Agents SDK и своем сервере ChatKit» вместо Agent Builder.
-- Сайт: EN-ссылка на `/en/` и новый `demo_text` кейса 7, передать тексты контент-заводу.
+- Remove `/api/create-session`, the `CHATKIT_WORKFLOW_ID*` variables and the old `client_secret` code.
+- The case README: "agents on the Agents SDK and my own ChatKit server" instead of Agent Builder.
+- The site: the EN link to `/en/` and the new `demo_text` for case 7, texts handed to the content factory.
 
-## Сроки
+## Timeline
 
-| Когда | Что |
+| When | What |
 |---|---|
-| Как можно скорее | Шаг 1 (Т). Без него переношу инструкции по описанию кейса и рискую потерять детали |
-| В течение 1–2 дней после экспорта | Шаги 2–8 (К) |
-| До 29 ноября | Шаг 9 (Т) и переключение |
-| После 30 ноября | Шаг 10 |
+| As soon as possible | Step 1 (T). Without it I'd port the instructions from the case description and risk losing details |
+| Within 1–2 days after the export | Steps 2–8 (C) |
+| Before 29 November | Step 9 (T) and the switch |
+| After 30 November | Step 10 |
 
-Шаги 2, 4 и 5 можно начать до экспорта: от него зависят только тексты инструкций агентов (шаг 3).
+Steps 2, 4 and 5 can start before the export: only the agent instruction texts (step 3) depend on it.
 
-## Если что-то пойдет не так
+## If something goes wrong
 
-- До переключения старый виджет работает как раньше.
-- После переключения откат — вернуть прежний `widget.js` и nginx-маршрут: копии сохраняются при выкатке. После 30 ноября откатываться будет не на что, поэтому приемка — до этой даты.
+- Until the switch, the old widget works as before.
+- After the switch, rolling back means restoring the previous `widget.js` and nginx route: copies are kept at deploy time. After 30 November there will be nothing to roll back to, so sign-off happens before that date.
 
-## Источники
+## Sources
 
-- Deprecations: https://developers.openai.com/api/docs/deprecations (строка «Nov 30, 2026 · Agent Builder · Agents SDK or ChatGPT Workspace Agents»)
-- Миграция: https://developers.openai.com/api/docs/guides/agent-builder/migrate-from-agent-builder
-- ChatKit со своим сервером: https://developers.openai.com/api/docs/guides/custom-chatkit
+- Deprecations: https://developers.openai.com/api/docs/deprecations (the line "Nov 30, 2026 · Agent Builder · Agents SDK or ChatGPT Workspace Agents")
+- Migration: https://developers.openai.com/api/docs/guides/agent-builder/migrate-from-agent-builder
+- ChatKit with your own server: https://developers.openai.com/api/docs/guides/custom-chatkit
 - Agents SDK: https://developers.openai.com/api/docs/guides/agents/quickstart
-- Опции виджета: типы пакета `@openai/chatkit` 1.9.0 (`CustomApiConfig`: `url`, `domainKey`)
+- Widget options: the `@openai/chatkit` 1.9.0 package types (`CustomApiConfig`: `url`, `domainKey`)
